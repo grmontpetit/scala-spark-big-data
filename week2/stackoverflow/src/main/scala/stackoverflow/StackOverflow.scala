@@ -8,18 +8,21 @@ import annotation.tailrec
 import scala.reflect.ClassTag
 
 /** A raw stackoverflow posting, either a question or an answer */
-case class Posting(postingType: Int, id: Int, acceptedAnswer: Option[Int], parentId: Option[QID], score: Int, tags: Option[String]) extends Serializable
-
+case class Posting(postingType: Int,
+                   id: Int,
+                   acceptedAnswer: Option[Int],
+                   parentId: Option[QID],
+                   score: Int,
+                   tags: Option[String]) extends Serializable
 
 /** The main class */
 object StackOverflow extends StackOverflow {
 
-  @transient lazy val conf: SparkConf = new SparkConf().setMaster("local").setAppName("StackOverflow")
+  @transient lazy val conf: SparkConf = new SparkConf().setMaster("local[*]").setAppName("StackOverflow")
   @transient lazy val sc: SparkContext = new SparkContext(conf)
 
   /** Main function */
   def main(args: Array[String]): Unit = {
-
     val lines   = sc.textFile("src/main/resources/stackoverflow/stackoverflow.csv")
     val raw     = rawPostings(lines)
     val grouped = groupedPostings(raw)
@@ -75,29 +78,26 @@ class StackOverflow extends Serializable {
               tags =           if (arr.length >= 6) Some(arr(5).intern()) else None)
     })
 
-
   /** Group the questions and answers together */
   def groupedPostings(postings: RDD[Posting]): RDD[(QID, Iterable[(Question, Answer)])] = {
-    ???
+    val questions = postings
+      .filter(_.postingType == 1).map(q => (q.id, q))
+    val answers = postings
+      .filter(p => p.postingType == 2 && p.parentId.isDefined)
+      .map(d => (d.parentId.get, d))
+    val joined = questions.join(answers)
+    joined.groupByKey()
   }
-
 
   /** Compute the maximum score for each posting */
   def scoredPostings(grouped: RDD[(QID, Iterable[(Question, Answer)])]): RDD[(Question, HighScore)] = {
 
-    def answerHighScore(as: Array[Answer]): HighScore = {
-      var highScore = 0
-          var i = 0
-          while (i < as.length) {
-            val score = as(i).score
-                if (score > highScore)
-                  highScore = score
-                  i += 1
-          }
-      highScore
-    }
+    def answerHighScore(as: Iterable[Answer]): HighScore = as.map(_.score).max
 
-    ???
+    grouped
+      .flatMap(_._2)
+      .groupByKey()
+      .mapValues(answerHighScore)
   }
 
 
@@ -105,19 +105,14 @@ class StackOverflow extends Serializable {
   def vectorPostings(scored: RDD[(Question, HighScore)]): RDD[(LangIndex, HighScore)] = {
     /** Return optional index of first language that occurs in `tags`. */
     def firstLangInTag(tag: Option[String], ls: List[String]): Option[Int] = {
-      if (tag.isEmpty) None
-      else if (ls.isEmpty) None
-      else if (tag.get == ls.head) Some(0) // index: 0
-      else {
-        val tmp = firstLangInTag(tag, ls.tail)
-        tmp match {
-          case None => None
-          case Some(i) => Some(i + 1) // index i in ls.tail => index i+1
-        }
+      tag.fold[Option[Int]](None){ t =>
+        Some(ls.indexOf(t))
       }
     }
-
-    ???
+    scored
+      .map(a => (firstLangInTag(a._1.tags, langs), a._2))
+      .filter(_._1.isDefined)
+      .map(v => (v._1.getOrElse(0), v._2))
   }
 
 
@@ -199,9 +194,6 @@ class StackOverflow extends Serializable {
     }
   }
 
-
-
-
   //
   //
   //  Kmeans utilities:
@@ -209,9 +201,7 @@ class StackOverflow extends Serializable {
   //
 
   /** Decide whether the kmeans clustering converged */
-  def converged(distance: Double) =
-    distance < kmeansEta
-
+  def converged(distance: Double): Boolean = distance < kmeansEta
 
   /** Return the euclidean distance between two points */
   def euclideanDistance(v1: (Int, Int), v2: (Int, Int)): Double = {
@@ -223,47 +213,37 @@ class StackOverflow extends Serializable {
   /** Return the euclidean distance between two points */
   def euclideanDistance(a1: Array[(Int, Int)], a2: Array[(Int, Int)]): Double = {
     assert(a1.length == a2.length)
-    var sum = 0d
-    var idx = 0
-    while(idx < a1.length) {
-      sum += euclideanDistance(a1(idx), a2(idx))
-      idx += 1
+    a1.indices.foldLeft[Double](0.0){(acc, i) =>
+      acc + (euclideanDistance(a1(i), a2(i)))
     }
-    sum
   }
 
   /** Return the closest point */
   def findClosest(p: (Int, Int), centers: Array[(Int, Int)]): Int = {
-    var bestIndex = 0
-    var closest = Double.PositiveInfinity
-    for (i <- 0 until centers.length) {
-      val tempDist = euclideanDistance(p, centers(i))
-      if (tempDist < closest) {
-        closest = tempDist
-        bestIndex = i
+    def iterate(lastClosest: Double, currentIndex: Int, lastClosestIndex: Int, remaining: Array[(Int, Int)]): Int = {
+      if (remaining.length == 0) lastClosestIndex
+      else {
+        val currentDistance = euclideanDistance(p, remaining.head)
+        if (currentDistance < lastClosest)
+          iterate(currentDistance, currentIndex + 1, currentIndex, remaining.tail)
+        else {
+          iterate(lastClosest, currentIndex + 1, lastClosestIndex, remaining.tail)
+        }
       }
     }
-    bestIndex
+    iterate(Int.MaxValue, 0, 0, centers)
   }
-
 
   /** Average the vectors */
   def averageVectors(ps: Iterable[(Int, Int)]): (Int, Int) = {
-    val iter = ps.iterator
-    var count = 0
-    var comp1: Long = 0
-    var comp2: Long = 0
-    while (iter.hasNext) {
-      val item = iter.next
-      comp1 += item._1
-      comp2 += item._2
-      count += 1
+    val (comp1, comp2, count) = ps.foldLeft((0L, 0L, 0)){(acc, tuple) =>
+      val x = acc._1
+      val y = acc._2
+      val counter = acc._3
+      (x + tuple._1, y + tuple._2, counter + 1)
     }
     ((comp1 / count).toInt, (comp2 / count).toInt)
   }
-
-
-
 
   //
   //
@@ -275,10 +255,11 @@ class StackOverflow extends Serializable {
     val closestGrouped = closest.groupByKey()
 
     val median = closestGrouped.mapValues { vs =>
-      val langLabel: String   = ??? // most common language in the cluster
-      val langPercent: Double = ??? // percent of the questions in the most common language
-      val clusterSize: Int    = ???
-      val medianScore: Int    = ???
+      val sorted = vs.toList.sortWith(_._2 > _._2)
+      val langLabel: String   = langs(sorted.head._1) // most common language in the cluster
+      val langPercent: Double = (sorted.head._2.toDouble / vs.size.toDouble) * 100 // percent of the questions in the most common language
+      val clusterSize: Int    = sorted.size
+      val medianScore: Int    = sorted.splitAt(clusterSize / 2)._2.head._2
 
       (langLabel, langPercent, clusterSize, medianScore)
     }
