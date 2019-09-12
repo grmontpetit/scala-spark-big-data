@@ -36,18 +36,6 @@ class StackOverflowSuite extends FunSuite with BeforeAndAfterAll {
     assert(instantiatable, "Can't instantiate a StackOverflow object")
   }
 
-  test("cluster results should be accurate") {
-//    @transient lazy val conf: SparkConf = new SparkConf().setMaster("local[*]").setAppName("StackOverflow")
-//    @transient lazy val sc: SparkContext = new SparkContext(conf)
-//    val lines   = sc.textFile("src/main/resources/stackoverflow/stackoverflow.csv")
-//    val raw     = testObject.rawPostings(lines)
-//    val grouped = testObject.groupedPostings(raw)
-//    val scored  = testObject.scoredPostings(grouped)
-//    val vectors = testObject.vectorPostings(scored)
-//    val means   = testObject.kmeans(testObject.sampleVectors(vectors), vectors, debug = true)
-//    val results = testObject.clusterResults(means, vectors)
-  }
-
   /* Below are some refactoring tests as the original code was not functional (ie, some functions had vars, etc...) */
 
   def euclideanDistance(v1: (Int, Int), v2: (Int, Int)): Double = {
@@ -99,7 +87,7 @@ class StackOverflowSuite extends FunSuite with BeforeAndAfterAll {
 
   test("closest point should be the same") {
 
-    val centers = Array((1, 2), (6, 7))
+    val centers = Array((1, 2), (6, 7), (0, 0), (1000, 1000))
     val point = (7, 7)
 
     def findClosest1(p: (Int, Int), centers: Array[(Int, Int)]): Int = {

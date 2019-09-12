@@ -59,7 +59,6 @@ class StackOverflow extends Serializable {
   /** K-means parameter: Maximum iterations */
   def kmeansMaxIterations = 120
 
-
   //
   //
   // Parsing utilities:
@@ -91,9 +90,7 @@ class StackOverflow extends Serializable {
 
   /** Compute the maximum score for each posting */
   def scoredPostings(grouped: RDD[(QID, Iterable[(Question, Answer)])]): RDD[(Question, HighScore)] = {
-
     def answerHighScore(as: Iterable[Answer]): HighScore = as.map(_.score).max
-
     grouped
       .flatMap(_._2)
       .groupByKey()
@@ -110,9 +107,7 @@ class StackOverflow extends Serializable {
       }
     }
     scored
-      .map(a => (firstLangInTag(a._1.tags, langs), a._2))
-      .filter(_._1.isDefined)
-      .map(v => (v._1.getOrElse(0), v._2))
+      .map(x => (firstLangInTag(x._1.tags, langs).getOrElse(0) * langSpread, x._2)).cache()
   }
 
 
@@ -170,6 +165,15 @@ class StackOverflow extends Serializable {
     val newMeans = means.clone() // you need to compute newMeans
 
     // TODO: Fill in the newMeans array
+    vectors
+      .map(v => (findClosest(v, means), v))
+      .groupByKey
+      .mapValues(averageVectors)
+      .collect
+      .foreach { case (index, averageMean) =>
+        newMeans(index) = averageMean
+      }
+
     val distance = euclideanDistance(means, newMeans)
 
     if (debug) {
@@ -210,7 +214,7 @@ class StackOverflow extends Serializable {
     part1 + part2
   }
 
-  /** Return the euclidean distance between two points */
+  /** Return the euclidean distance between two array of points */
   def euclideanDistance(a1: Array[(Int, Int)], a2: Array[(Int, Int)]): Double = {
     assert(a1.length == a2.length)
     a1.indices.foldLeft[Double](0.0){(acc, i) =>
@@ -220,6 +224,7 @@ class StackOverflow extends Serializable {
 
   /** Return the closest point */
   def findClosest(p: (Int, Int), centers: Array[(Int, Int)]): Int = {
+    @tailrec
     def iterate(lastClosest: Double, currentIndex: Int, lastClosestIndex: Int, remaining: Array[(Int, Int)]): Int = {
       if (remaining.length == 0) lastClosestIndex
       else {
@@ -251,15 +256,24 @@ class StackOverflow extends Serializable {
   //
   //
   def clusterResults(means: Array[(Int, Int)], vectors: RDD[(LangIndex, HighScore)]): Array[(String, Double, Int, Int)] = {
-    val closest = vectors.map(p => (findClosest(p, means), p))
-    val closestGrouped = closest.groupByKey()
+    val closest: RDD[(Int, (LangIndex, HighScore))] = vectors.map(p => (findClosest(p, means), p))
+    val closestGrouped: RDD[(Int, Iterable[(LangIndex, HighScore)])] = closest.groupByKey()
 
     val median = closestGrouped.mapValues { vs =>
-      val sorted = vs.toList.sortWith(_._2 > _._2)
-      val langLabel: String   = langs(sorted.head._1) // most common language in the cluster
-      val langPercent: Double = (sorted.head._2.toDouble / vs.size.toDouble) * 100 // percent of the questions in the most common language
-      val clusterSize: Int    = sorted.size
-      val medianScore: Int    = sorted.splitAt(clusterSize / 2)._2.head._2
+
+      val grouped = vs
+        .map(_._1 / langSpread)
+        .groupBy(identity)
+        .mapValues(_.size)
+
+      // most common language in the cluster
+      val maxIndex = grouped.maxBy(_._2)._1
+      val langLabel: String = langs(maxIndex)
+      // percent of the questions in the most common language
+      val langPercent: Double = (grouped(maxIndex).toDouble / vs.size.toDouble) * 100.toDouble
+      val clusterSize: Int = vs.size
+      val (left, right) = vs.map(_._2).toList.sorted.splitAt(clusterSize / 2)
+      val medianScore: Int = if (clusterSize % 2 > 0) right.head else (left.last + right.head) / 2
 
       (langLabel, langPercent, clusterSize, medianScore)
     }
